@@ -43,7 +43,8 @@ def load_data(path):
     return df
 
 # Main
-data_path = "/Users/nirugidla/PycharmProjects/UMICHIGAN_code/dashboards/duet_invoice_cleaned.csv"
+#data_path = "/Users/nirugidla/PycharmProjects/UMICHIGAN_code/dashboards/duet_invoice_cleaned.csv"
+data_path = "duet_invoice_cleaned.csv"
 df_original = load_data(data_path)
 
 # Keep only relevant columns
