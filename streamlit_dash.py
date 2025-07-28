@@ -251,27 +251,95 @@ def cost_vs_price():
     st.plotly_chart(fig, use_container_width=True)
 
 # 9. YoY Growth
-def yoy_growth():
-    st.write("### Year-over-Year Revenue Growth Rate")
-    all_years = [2022,2023,2024,2025]
-    rev = df_filtered.groupby('Year')['Total Price'].sum().reset_index()
-    pct = rev.copy()
-    pct['Growth'] = pct['Total Price'].pct_change().mul(100)
-    pct_full = pd.DataFrame({'Year':all_years}).merge(
-        pct[['Year','Growth']], on='Year', how='left'
-    ).fillna({'Growth':0})
-    pct_full['Year'] = pct_full['Year'].astype(str)
-    fig = px.bar(
-        pct_full,
-        x='Year',
-        y='Growth',
-        text=pct_full['Growth'].round(1).astype(str)+'%',
-        labels={'Growth':'Growth Rate (%)','Year':'Year'},
-        title='Year-over-Year Revenue Growth Rate'
+# def yoy_growth():
+#     st.write("### Year-over-Year Revenue Growth Rate")
+#     all_years = [2022,2023,2024,2025]
+#     rev = df_filtered.groupby('Year')['Total Price'].sum().reset_index()
+#     pct = rev.copy()
+#     pct['Growth'] = pct['Total Price'].pct_change().mul(100)
+#     pct_full = pd.DataFrame({'Year':all_years}).merge(
+#         pct[['Year','Growth']], on='Year', how='left'
+#     ).fillna({'Growth':0})
+#     pct_full['Year'] = pct_full['Year'].astype(str)
+#     fig = px.bar(
+#         pct_full,
+#         x='Year',
+#         y='Growth',
+#         text=pct_full['Growth'].round(1).astype(str)+'%',
+#         labels={'Growth':'Growth Rate (%)','Year':'Year'},
+#         title='Year-over-Year Revenue Growth Rate'
+#     )
+#     fig.update_traces(textposition='outside')
+#     fig.update_yaxes(tickformat='.1f')
+#     st.plotly_chart(fig, use_container_width=True)
+def yoy_growth_quarterly():
+    st.write("### Quarterly and Yearly Revenue Growth")
+
+    # --- 1. Prepare Quarterly Data ---
+    temp = df_filtered.copy()
+    # Create a Quarter column based on Month
+    month_to_q = {'Jan': 'Q1', 'Feb': 'Q1', 'Mar': 'Q1',
+                  'Apr': 'Q2', 'May': 'Q2', 'Jun': 'Q2',
+                  'Jul': 'Q3', 'Aug': 'Q3', 'Sep': 'Q3',
+                  'Oct': 'Q4', 'Nov': 'Q4', 'Dec': 'Q4'}
+    temp['Quarter'] = temp['Month'].map(month_to_q)
+    # Keep only 2023–2025
+    years = [2023, 2024, 2025]
+    temp = temp[temp['Year'].isin(years)]
+    
+    # Aggregate revenue per Year-Quarter
+    qrev = temp.groupby(['Year', 'Quarter'])['Total Price'].sum().reset_index()
+    # Ensure all quarters exist
+    all_combos = pd.MultiIndex.from_product([years, ['Q1','Q2','Q3','Q4']], names=['Year', 'Quarter'])
+    qrev = qrev.set_index(['Year','Quarter']).reindex(all_combos, fill_value=0).reset_index()
+
+    # --- 2. Compute QoQ and YoY Growth ---
+    qrev['QoQ Growth (%)'] = qrev.groupby('Year')['Total Price'].pct_change().mul(100)
+    # Year-over-Year Growth per quarter (e.g. Q2 2024 vs Q2 2023)
+    qrev['YoY Growth (%)'] = qrev.groupby('Quarter')['Total Price'].pct_change().mul(100)
+    
+    # --- 3. Visualization ---
+    # A. Bar chart for Revenue (grouped by Year, x=Quarter)
+    fig = go.Figure()
+    for year in years:
+        data = qrev[qrev['Year'] == year]
+        fig.add_trace(go.Bar(
+            x=data['Quarter'],
+            y=data['Total Price'],
+            name=f"{year} Revenue",
+            text=[f"${x:,.0f}" for x in data['Total Price']],
+            textposition='outside'
+        ))
+
+    # B. Add YoY Growth Line for each year (excluding 2023, which has no YoY)
+    colors = {2024: 'crimson', 2025: 'mediumseagreen'}
+    for year in [2024, 2025]:
+        data = qrev[qrev['Year'] == year]
+        fig.add_trace(go.Scatter(
+            x=data['Quarter'],
+            y=data['YoY Growth (%)'],
+            name=f"{year} YoY Growth",
+            mode='lines+markers',
+            yaxis='y2',
+            marker=dict(size=10, color=colors[year]),
+            line=dict(width=3, color=colors[year]),
+            text=[f"{x:.1f}%" for x in data['YoY Growth (%)']],
+            textposition='top center'
+        ))
+    # Layout
+    fig.update_layout(
+        title='Quarterly Revenue and Year-over-Year Growth',
+        xaxis=dict(title='Quarter'),
+        yaxis=dict(title='Revenue ($)'),
+        yaxis2=dict(title='YoY Growth (%)', overlaying='y', side='right', showgrid=False),
+        barmode='group',
+        legend=dict(orientation='h'),
+        margin=dict(t=50, b=30),
+        height=500
     )
-    fig.update_traces(textposition='outside')
-    fig.update_yaxes(tickformat='.1f')
     st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(qrev)
+
 
 # Render tabs
 funcs = [
