@@ -71,7 +71,7 @@ selected_agg = st.sidebar.selectbox("Select aggregation", agg_options, index=0)
 tabs = st.tabs([
     "Descriptive Stats", "Correlation", "Time Trends",
     "Family Breakdown", "Packaging Analysis", "Product Analysis",
-    "Tax Rate", "Cost vs Price", "YoY Growth"
+    "Tax Rate", "Cost vs Price", "YoY Growth", "Quarterly Growth"  # <--- ADD TAB
 ])
 
 # 1. Descriptive Statistics
@@ -345,7 +345,7 @@ def yoy_growth_quarterly():
 funcs = [
     descriptive_stats, correlation_matrix, monthly_trend,
     family_breakdown, packaging_analysis, product_analysis,
-    tax_rate, cost_vs_price, yoy_growth
+    tax_rate, cost_vs_price, yoy_growth, yoy_growth_quarterly      # <--- ADD FUNC
 ]
 for tab, fn in zip(tabs, funcs):
     with tab:
