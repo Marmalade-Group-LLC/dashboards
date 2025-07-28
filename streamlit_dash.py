@@ -71,7 +71,7 @@ selected_agg = st.sidebar.selectbox("Select aggregation", agg_options, index=0)
 tabs = st.tabs([
     "Descriptive Stats", "Correlation", "Time Trends",
     "Family Breakdown", "Packaging Analysis", "Product Analysis",
-    "Tax Rate", "Cost vs Price", "YoY Growth", "Quarterly Growth"  # <--- ADD TAB
+    "Tax Rate", "Cost vs Price", "Quarterly Growth"
 ])
 
 # 1. Descriptive Statistics
@@ -250,28 +250,7 @@ def cost_vs_price():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# 9. YoY Growth
-# def yoy_growth():
-#     st.write("### Year-over-Year Revenue Growth Rate")
-#     all_years = [2022,2023,2024,2025]
-#     rev = df_filtered.groupby('Year')['Total Price'].sum().reset_index()
-#     pct = rev.copy()
-#     pct['Growth'] = pct['Total Price'].pct_change().mul(100)
-#     pct_full = pd.DataFrame({'Year':all_years}).merge(
-#         pct[['Year','Growth']], on='Year', how='left'
-#     ).fillna({'Growth':0})
-#     pct_full['Year'] = pct_full['Year'].astype(str)
-#     fig = px.bar(
-#         pct_full,
-#         x='Year',
-#         y='Growth',
-#         text=pct_full['Growth'].round(1).astype(str)+'%',
-#         labels={'Growth':'Growth Rate (%)','Year':'Year'},
-#         title='Year-over-Year Revenue Growth Rate'
-#     )
-#     fig.update_traces(textposition='outside')
-#     fig.update_yaxes(tickformat='.1f')
-#     st.plotly_chart(fig, use_container_width=True)
+# 9. Quarterly Growth (YoY and QoQ)
 def yoy_growth_quarterly():
     st.write("### Quarterly and Yearly Revenue Growth")
 
@@ -340,12 +319,11 @@ def yoy_growth_quarterly():
     st.plotly_chart(fig, use_container_width=True)
     st.dataframe(qrev)
 
-
 # Render tabs
 funcs = [
     descriptive_stats, correlation_matrix, monthly_trend,
     family_breakdown, packaging_analysis, product_analysis,
-    tax_rate, cost_vs_price, yoy_growth, yoy_growth_quarterly      # <--- ADD FUNC
+    tax_rate, cost_vs_price, yoy_growth_quarterly
 ]
 for tab, fn in zip(tabs, funcs):
     with tab:
