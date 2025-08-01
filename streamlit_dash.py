@@ -221,20 +221,70 @@ def product_analysis():
     st.plotly_chart(fig, use_container_width=True)
 
 # 7. Tax Rate Analysis
+# def tax_rate():
+#     st.write("### Effective Tax Rate by Product Family")
+#     temp = df_filtered.dropna(subset=['Sales Tax','Total Price']).copy()
+#     temp = temp[temp['Total Price'] > 0]
+#     temp['Tax Rate'] = temp['Sales Tax'] / temp['Total Price']
+#     fig = px.box(
+#         temp,
+#         x='Product Family',
+#         y='Tax Rate',
+#         points='outliers',
+#         labels={'Tax Rate':'Tax Rate (%)'}
+#     )
+#     fig.update_yaxes(tickformat='.1%')
+#     st.plotly_chart(fig, use_container_width=True)
+
 def tax_rate():
-    st.write("### Effective Tax Rate by Product Family")
-    temp = df_filtered.dropna(subset=['Sales Tax','Total Price']).copy()
+    st.write("### High Tax Rate Products and Packaging Types")
+    temp = df_filtered.dropna(subset=['Sales Tax', 'Total Price', 'Product', 'Packaging']).copy()
     temp = temp[temp['Total Price'] > 0]
     temp['Tax Rate'] = temp['Sales Tax'] / temp['Total Price']
-    fig = px.box(
-        temp,
-        x='Product Family',
-        y='Tax Rate',
-        points='outliers',
-        labels={'Tax Rate':'Tax Rate (%)'}
+
+    # Threshold: Show the top 10% tax rates
+    high_thresh = temp['Tax Rate'].quantile(0.9)
+    high_tax = temp[temp['Tax Rate'] >= high_thresh]
+
+    st.info(f"Showing products and packaging with tax rate ≥ {high_thresh:.1%} (top 10%)")
+
+    # Group by Product, Packaging, and Product Family
+    group_cols = ['Product', 'Packaging', 'Product Family']
+    top_tax = (
+        high_tax.groupby(group_cols)
+        .agg(
+            n_invoices=('Tax Rate', 'count'),
+            avg_tax_rate=('Tax Rate', 'mean'),
+            min_tax_rate=('Tax Rate', 'min'),
+            max_tax_rate=('Tax Rate', 'max'),
+            total_price=('Total Price', 'sum')
+        )
+        .reset_index()
+        .sort_values('avg_tax_rate', ascending=False)
     )
-    fig.update_yaxes(tickformat='.1%')
+    top_tax['avg_tax_rate'] = top_tax['avg_tax_rate'] * 100  # To percent
+
+    # Show table of results
+    st.write("#### Top Product & Packaging Combos by Avg Tax Rate")
+    st.dataframe(top_tax.style.format({
+        'avg_tax_rate': '{:.1f}%',
+        'total_price': '${:,.0f}'
+    }))
+
+    # Plot: Top 30 as horizontal bar chart
+    fig = px.bar(
+        top_tax.head(30),
+        x='avg_tax_rate',
+        y='Product',
+        color='Packaging',
+        orientation='h',
+        hover_data=['Product Family', 'n_invoices', 'min_tax_rate', 'max_tax_rate', 'total_price'],
+        title=f"Top 30 Product & Packaging Types with High Tax Rate",
+        labels={'avg_tax_rate': 'Avg Tax Rate (%)'}
+    )
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
+
 
 # 8. Cost vs Price Scatter
 def cost_vs_price():
