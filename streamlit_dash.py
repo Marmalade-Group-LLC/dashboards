@@ -221,20 +221,6 @@ def product_analysis():
     st.plotly_chart(fig, use_container_width=True)
 
 # 7. Tax Rate Analysis
-# def tax_rate():
-#     st.write("### Effective Tax Rate by Product Family")
-#     temp = df_filtered.dropna(subset=['Sales Tax','Total Price']).copy()
-#     temp = temp[temp['Total Price'] > 0]
-#     temp['Tax Rate'] = temp['Sales Tax'] / temp['Total Price']
-#     fig = px.box(
-#         temp,
-#         x='Product Family',
-#         y='Tax Rate',
-#         points='outliers',
-#         labels={'Tax Rate':'Tax Rate (%)'}
-#     )
-#     fig.update_yaxes(tickformat='.1%')
-#     st.plotly_chart(fig, use_container_width=True)
 
 def tax_rate():
     st.write("### High Tax Rate Products and Packaging Types")
@@ -287,18 +273,51 @@ def tax_rate():
 
 
 # 8. Cost vs Price Scatter
+# def cost_vs_price():
+#     st.write("### Unit Cost vs Total Price Scatter Plot")
+#     fig = px.scatter(
+#         df_filtered,
+#         x='Unit Cost',
+#         y='Total Price',
+#         color='Product Family',
+#         hover_data=['Product','Packaging'],
+#         opacity=0.6,
+#         labels={'Unit Cost':'Unit Cost ($)','Total Price':'Total Price ($)'}
+#     )
+#     st.plotly_chart(fig, use_container_width=True)
 def cost_vs_price():
     st.write("### Unit Cost vs Total Price Scatter Plot")
+    # Clean data: Remove rows where values are missing or <= 0
+    temp = df_filtered.dropna(subset=['Unit Cost', 'Total Price', 'Product', 'Packaging', 'Product Family'])
+    temp = temp[(temp['Unit Cost'] > 0) & (temp['Total Price'] > 0)]
+
+    # Optional: Show log scale checkbox for x-axis (Unit Cost)
+    log_x = st.checkbox("Log scale Unit Cost (recommended for wide range)", value=True)
+
+    # Plotly scatter, color by Product Family, hover shows Product, Packaging
     fig = px.scatter(
-        df_filtered,
+        temp,
         x='Unit Cost',
         y='Total Price',
         color='Product Family',
-        hover_data=['Product','Packaging'],
-        opacity=0.6,
-        labels={'Unit Cost':'Unit Cost ($)','Total Price':'Total Price ($)'}
+        hover_data=['Product', 'Packaging'],
+        opacity=0.7,
+        labels={'Unit Cost': 'Unit Cost ($)', 'Total Price': 'Total Price ($)'},
+        title="Unit Cost vs Total Price by Product Family"
     )
+    if log_x:
+        fig.update_xaxes(type='log')
+    fig.update_traces(marker=dict(size=8, line=dict(width=0.5, color='DarkSlateGrey')))
     st.plotly_chart(fig, use_container_width=True)
+
+    # Show tables for top outliers
+    high_cost = temp.sort_values('Unit Cost', ascending=False).head(10)
+    high_price = temp.sort_values('Total Price', ascending=False).head(10)
+    st.write("#### Top 10 by Unit Cost")
+    st.dataframe(high_cost[['Product', 'Packaging', 'Product Family', 'Unit Cost', 'Total Price']])
+    st.write("#### Top 10 by Total Price")
+    st.dataframe(high_price[['Product', 'Packaging', 'Product Family', 'Unit Cost', 'Total Price']])
+
 
 # 9. Quarterly Growth (YoY and QoQ)
 def yoy_growth_quarterly():
