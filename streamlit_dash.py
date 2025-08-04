@@ -1,399 +1,369 @@
-import streamlit as st
-import pandas as pd
+# app.py
+import os
 import numpy as np
+import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import streamlit as st
 
-# Page config
-st.set_page_config(
-    page_title="Invoice Analysis Dashboard",
-    page_icon="📊",
-    layout="wide"
-)
+# --------------------------- Page config ---------------------------
+st.set_page_config(page_title="Sales Analysis", page_icon="📈", layout="wide")
 
-# Load data
-@st.cache_data
-def load_data(path):
-    df = pd.read_csv(path)
+# --------------------------- Helpers ---------------------------
+EXPECTED_COLUMNS = [
+    "Company","Customer Number","Customer ID","Customer Name",
+    "Customer City","Customer State","Customer Country",
+    "ShipTo Name","ShipTo City","ShipTo State","ZIP Code","ShipTo Country",
+    "Order Number","Plant","Invoice Number","Invoice Date","Invoice Amount",
+    "Invoice Line","Part Number","Line Description","Product Family",
+    "Order Qty","Ship Qty","Misc Charges","Tax Code","Rate Code",
+    "Taxable Amount","Tax Percent","Tax Amount",
+    "Avg Total Cost","Avg Labor Cost","Avg Burden Cost","Avg Material Cost",
+    "Avg Subcontract Cost","Avg Material Burden Cost","Cost ID"
+]
 
-    # Rename columns for readability
-    rename_map = {
-        'Sales_Tax__c': 'Sales Tax',
-        'Total_Cost__c': 'Total Cost',
-        'Total_Price__c': 'Total Price',
-        'BurUnitCost__c': 'Unit Cost',
-        'Product_Family__c': 'Product Family',
-        'Packaging': 'Packaging',
-        'Product': 'Product',
-        'CreatedDate_month': 'Month',
-        'CreatedDate_year': 'Year'
-    }
-    df = df.rename(columns=rename_map)
+def add_calendar_if_missing(df: pd.DataFrame) -> pd.DataFrame:
+    """Add Year / Month Name / Quarter / Year-Month if they are missing.
+    (Light-touch; your CSV is already cleaned.)"""
+    out = df.copy()
+    if "Invoice Date" in out.columns and not np.issubdtype(out["Invoice Date"].dtype, np.datetime64):
+        # Only parse type; no transformation of values
+        out["Invoice Date"] = pd.to_datetime(out["Invoice Date"], errors="coerce")
 
-    # Ensure necessary date columns
-    for col in ['Month', 'Year']:
-        if col not in df.columns:
-            st.error(f"Missing required column: {col}")
-            st.stop()
+    if "Year" not in out.columns and "Invoice Date" in out.columns:
+        out["Year"] = out["Invoice Date"].dt.year
 
-    # Enforce chronological month order
-    month_cats = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-    df['Month'] = pd.Categorical(df['Month'], categories=month_cats, ordered=True)
+    month_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    if "Month Name" not in out.columns and "Invoice Date" in out.columns:
+        out["Month Name"] = out["Invoice Date"].dt.strftime('%b')
+    if "Month Name" in out.columns:
+        out["Month Name"] = pd.Categorical(out["Month Name"], categories=month_order, ordered=True)
 
-    return df
+    if "Quarter" not in out.columns and "Invoice Date" in out.columns:
+        out["Quarter"] = 'Q' + out["Invoice Date"].dt.quarter.astype(str)
 
-# Main
-#data_path = "/Users/nirugidla/PycharmProjects/UMICHIGAN_code/dashboards/duet_invoice_cleaned.csv"
-data_path = "duet_invoice_cleaned.csv"
-df_original = load_data(data_path)
+    if "Year-Month" not in out.columns and "Invoice Date" in out.columns:
+        out["Year-Month"] = out["Invoice Date"].dt.to_period("M").astype(str)
 
-# Keep only relevant columns
-df = df_original[[
-    'Sales Tax', 'Total Cost', 'Total Price', 'Unit Cost',
-    'Product Family', 'Packaging', 'Product', 'Month', 'Year'
-]].copy()
+    return out
 
-# Sidebar filters
+def kpi_card(label, value, help_text=None):
+    st.metric(label, value, help=help_text)
+
+def plot_top_cities_map(df, size_by="sales", color_hex="#2E86AB", title=None):
+    """Expects df with ['lat','lon','total_sales','n_invoices','Customer City','Customer State']."""
+    if not {"lat","lon"}.issubset(df.columns):
+        st.info("No 'lat'/'lon' columns found. Precompute geocodes in your data to enable the map.")
+        return
+
+    m = df.dropna(subset=['lat','lon']).copy()
+    m["total_sales"] = pd.to_numeric(m["total_sales"], errors="coerce")
+    m["n_invoices"]  = pd.to_numeric(m["n_invoices"], errors="coerce")
+    m["total_sales_$"] = m["total_sales"].map(lambda x: f"${x:,.2f}")
+    size_col = "total_sales" if size_by == "sales" else "n_invoices"
+
+    # Prefer MapLibre API when available
+    if hasattr(px, "scatter_map"):
+        fig = px.scatter_map(
+            m, lat="lat", lon="lon", size=size_col, hover_name="Customer City",
+            hover_data={"total_sales_$": True, "n_invoices":":.0f"},
+            size_max=40, zoom=3, map_style="carto-positron",
+            title=title or f"Top Cities by {'Sales' if size_by=='sales' else 'Invoice Count'}"
+        )
+    else:
+        fig = px.scatter_mapbox(
+            m, lat="lat", lon="lon", size=size_col, hover_name="Customer City",
+            hover_data={"total_sales_$": True, "n_invoices":":.0f"},
+            size_max=40, zoom=3, mapbox_style="carto-positron",
+            title=title or f"Top Cities by {'Sales' if size_by=='sales' else 'Invoice Count'}"
+        )
+    fig.update_traces(marker=dict(color=color_hex, opacity=0.85))
+    fig.update_layout(showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------------------------- Data loader ---------------------------
+@st.cache_data(show_spinner=False)
+def load_data(file) -> pd.DataFrame:
+    if isinstance(file, str):
+        df = pd.read_csv(file, encoding="latin1", parse_dates=["Invoice Date"])
+    else:
+        df = pd.read_csv(file, encoding="latin1", parse_dates=["Invoice Date"])
+    return add_calendar_if_missing(df)
+
+# --------------------------- Sidebar ---------------------------
+st.sidebar.header("Data")
+uploaded = st.sidebar.file_uploader("Upload cleaned CSV", type=["csv"])
+default_path = st.sidebar.text_input("...or path to CSV", value="", help="Optional local path on the server.")
+df = None
+if uploaded is not None:
+    df = load_data(uploaded)
+elif default_path:
+    df = load_data(default_path)
+else:
+    st.info("Upload your **cleaned** CSV to get started.")
+    st.stop()
+
+# Global display prefs (just for Streamlit tables)
+pd.options.display.float_format = "{:,.2f}".format
+
+# Filters
 st.sidebar.header("Filters")
-families = st.sidebar.multiselect(
-    "Product Family", df['Product Family'].unique(), df['Product Family'].unique()
-)
-df_filtered = df[df['Product Family'].isin(families)].copy()
+state_filter = st.sidebar.multiselect("Customer State", sorted(df["Customer State"].dropna().unique().tolist()))
+family_filter = st.sidebar.multiselect("Product Family", sorted(df["Product Family"].dropna().unique().tolist()))
+date_min, date_max = df["Invoice Date"].min(), df["Invoice Date"].max()
+date_range = st.sidebar.date_input("Date range", value=(date_min, date_max))
 
-# Analysis options
-st.sidebar.markdown("### Analysis Options")
-metric_options = ['Sales Tax', 'Total Cost', 'Total Price', 'Unit Cost']
-agg_options = ['sum', 'mean', 'median', 'count', 'mode']
-selected_metric = st.sidebar.selectbox("Select metric", metric_options, index=2)
-selected_agg = st.sidebar.selectbox("Select aggregation", agg_options, index=0)
+mask = pd.Series(True, index=df.index)
+if state_filter:
+    mask &= df["Customer State"].isin(state_filter)
+if family_filter:
+    mask &= df["Product Family"].isin(family_filter)
+if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+    start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    mask &= (df["Invoice Date"] >= start) & (df["Invoice Date"] <= end)
 
-# Tabs for analyses
+data = df.loc[mask].copy()
+
+# --------------------------- Header KPIs ---------------------------
+st.title("📈 Sales Analysis Dashboard")
+
+c1, c2, c3, c4 = st.columns(4)
+kpi_card("Revenue", f"${data['Invoice Amount'].sum():,.0f}")
+kpi_card("Invoices", f"{data['Invoice Number'].nunique():,.0f}")
+kpi_card("Customers", f"{data['Customer ID'].nunique():,.0f}")
+avg_order = data.groupby("Invoice Number")["Invoice Amount"].sum().mean()
+kpi_card("Avg Invoice", f"${avg_order:,.0f}")
+
+st.divider()
+
+# --------------------------- Tabs ---------------------------
 tabs = st.tabs([
-    "Descriptive Stats", "Correlation", "Time Trends",
-    "Family Breakdown", "Packaging Analysis", "Product Analysis",
-    "Tax Rate", "Cost vs Price", "Quarterly Growth"
+    "Overview", "Customers", "Geography", "Time Series",
+    "Profitability", "Service Quality", "Cohorts & RFM",
+    "Product Mix", "Market Basket"
 ])
 
-# 1. Descriptive Statistics
-def descriptive_stats():
-    st.write("### Descriptive Statistics")
-    desc = df_filtered[metric_options].describe().T
-    styled = desc.style.format({
-        'mean': '${:,.2f}',
-        'std': '${:,.2f}',
-        'min': '${:,.2f}',
-        '25%': '${:,.2f}',
-        '50%': '${:,.2f}',
-        '75%': '${:,.2f}',
-        'max': '${:,.2f}',
-        'count': '{:,.0f}'
-    })
-    st.dataframe(styled)
-
-# 2. Value Correlation
-def correlation_matrix():
-    st.write("### Value Correlation Matrix")
-    corr = df_filtered[metric_options].corr()
-    fig = px.imshow(
-        corr,
-        text_auto=True,
-        color_continuous_scale='Blues',
-        labels={'x':'Metrics','y':'Metrics','color':'Correlation'}
+# ---------- Overview ----------
+with tabs[0]:
+    st.subheader("Top Cities & States")
+    city_group = (
+        data.groupby(["Customer City", "Customer State"], dropna=False)
+            .agg(total_sales=("Invoice Amount","sum"),
+                 n_invoices=("Invoice Number","nunique"))
+            .reset_index()
+            .sort_values("total_sales", ascending=False)
     )
+    cA, cB = st.columns([2,1])
+    with cA:
+        fig = px.bar(city_group.head(20), x="total_sales", y="Customer City",
+                     orientation="h", labels={"total_sales":"Total Sales ($)"},
+                     title="Top 20 Cities by Sales", color_discrete_sequence=["#2E86AB"])
+        fig.update_layout(yaxis={"categoryorder":"total ascending"})
+        fig.update_xaxes(separatethousands=True, tickprefix="$")
+        st.plotly_chart(fig, use_container_width=True)
+    with cB:
+        st.dataframe(city_group.head(20).style.format({
+            "total_sales":"${:,.2f}", "n_invoices":"{:,.0f}"
+        }), use_container_width=True)
+
+# ---------- Customers ----------
+with tabs[1]:
+    st.subheader("Top Customers")
+    cust_group = (
+        data.groupby("Customer Name", dropna=False)
+            .agg(total_sales=("Invoice Amount","sum"),
+                 n_invoices=("Invoice Number","nunique"),
+                 n_orders=("Order Number","nunique"))
+            .reset_index()
+            .sort_values("total_sales", ascending=False)
+    )
+    fig = px.bar(cust_group.head(20), x="total_sales", y="Customer Name",
+                 orientation="h", labels={"total_sales":"Total Sales ($)"},
+                 title="Top 20 Customers by Sales")
+    fig.update_layout(yaxis={"categoryorder":"total ascending"})
+    fig.update_xaxes(separatethousands=True, tickprefix="$")
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(cust_group.head(50).style.format({
+        "total_sales":"${:,.2f}", "n_invoices":"{:,.0f}", "n_orders":"{:,.0f}"
+    }), use_container_width=True)
+
+# ---------- Geography ----------
+with tabs[2]:
+    st.subheader("Revenue by State (USA)")
+    state_rev = (data.groupby("Customer State", as_index=False)
+                    .agg(revenue=("Invoice Amount","sum"),
+                         invoices=("Invoice Number","nunique")))
+    state_rev_us = state_rev[state_rev["Customer State"].str.len()==2].copy()
+    fig = px.choropleth(state_rev_us, locationmode="USA-states",
+                        locations="Customer State", color="revenue", scope="usa",
+                        hover_name="Customer State",
+                        hover_data={"revenue":":$", "invoices":":.0f"},
+                        title="Revenue by State")
+    fig.update_layout(coloraxis_colorbar=dict(title="Revenue"))
     st.plotly_chart(fig, use_container_width=True)
 
-# 3. Monthly Trends
+    st.subheader("Top Cities (Map)")
+    # If your data file already includes 'lat'/'lon' for top cities, this will render
+    plot_top_cities_map(city_group.head(15))
 
-def monthly_trend():
-    st.write(f"### Monthly Trend: {selected_agg.title()} of {selected_metric}")
-    # aggregate selected metric by Year and Month with chosen aggregation
-    if selected_agg == 'mode':
-        temp = df_filtered.groupby(['Year','Month'])[selected_metric].apply(
-            lambda x: x.mode().iat[0] if not x.mode().empty else np.nan
-        ).reset_index(name=selected_metric)
-    else:
-        grp = df_filtered.groupby(['Year','Month'])[selected_metric]
-        agg_func = 'count' if selected_agg=='count' else selected_agg
-        temp = grp.agg(agg_func).reset_index()
+# ---------- Time Series ----------
+with tabs[3]:
+    st.subheader("Monthly Sales")
+    monthly_sales = (
+        data.groupby("Year-Month", as_index=False)
+            .agg(total_sales=("Invoice Amount","sum"),
+                 invoices=("Invoice Number","nunique"))
+            .sort_values("Year-Month")
+    )
+    fig = px.line(monthly_sales, x="Year-Month", y="total_sales",
+                  markers=True, title="Monthly Sales ($)")
+    fig.update_yaxes(tickprefix="$", separatethousands=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # drop zero or NaN values for clarity
-    temp = temp.dropna(subset=[selected_metric])
-    if selected_agg in ['sum','count']:
-        temp = temp[temp[selected_metric] != 0]
-
-    # ensure chronological month order
+    st.subheader("YoY Monthly Sales by Month")
     month_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-    temp['Month'] = pd.Categorical(temp['Month'], categories=month_order, ordered=True)
-    temp = temp.sort_values(['Year','Month'])
-
-    # plot
-    fig = px.line(
-        temp,
-        x='Month',
-        y=selected_metric,
-        color='Year',
-        markers=True,
-        category_orders={'Month': month_order},
-        labels={selected_metric:f"{selected_agg.title()} of {selected_metric}", 'Month':'Month'}
+    yoy_month = (
+        data.groupby(["Year","Month Name"], as_index=False, observed=True)
+            .agg(total_sales=("Invoice Amount","sum"))
+            .sort_values(["Year","Month Name"])
     )
-    # formatting axis
-    if selected_agg in ['mean','median']:
-        fig.update_yaxes(tickformat='.2f')
-    elif selected_agg=='count':
-        fig.update_yaxes(tickformat='d')
+    yoy_month_plot = yoy_month.copy()
+    yoy_month_plot["Year"] = yoy_month_plot["Year"].astype(str)
+    fig = px.line(yoy_month_plot, x="Month Name", y="total_sales", color="Year",
+                  category_orders={"Month Name": month_order},
+                  color_discrete_sequence=px.colors.qualitative.Set2,
+                  markers=True, title="YoY Monthly Sales by Month")
+    fig.update_yaxes(tickprefix="$", separatethousands=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Quarterly Revenue")
+    qrev = (data.groupby(["Year","Quarter"], as_index=False, observed=True)
+              .agg(total_sales=("Invoice Amount","sum"))
+              .sort_values(["Year","Quarter"]))
+    qrev["Year"] = qrev["Year"].astype(str)
+    fig = px.bar(qrev, x="Quarter", y="total_sales", color="Year",
+                 barmode="group", title="Quarterly Revenue",
+                 color_discrete_sequence=px.colors.qualitative.Set2)
+    fig.update_xaxes(categoryorder="array", categoryarray=["Q1","Q2","Q3","Q4"])
+    fig.update_yaxes(tickprefix="$", separatethousands=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ---------- Profitability ----------
+with tabs[4]:
+    st.subheader("Margin by Product Family")
+    # Expect either precomputed total cost or per-unit cost; use best effort
+    COST_IS_PER_UNIT = True
+    d = data.copy()
+    if "Avg Total Cost" in d.columns:
+        if COST_IS_PER_UNIT:
+            d["Total Cost Calc"] = np.where(
+                pd.to_numeric(d["Ship Qty"], errors="coerce").fillna(0) > 0,
+                d["Avg Total Cost"] * pd.to_numeric(d["Ship Qty"], errors="coerce").fillna(0),
+                d["Avg Total Cost"]
+            )
+        else:
+            d["Total Cost Calc"] = d["Avg Total Cost"]
     else:
-        fig.update_yaxes(tickformat=',.2f')
+        d["Total Cost Calc"] = np.nan
 
+    pf_margin = (d.groupby("Product Family", as_index=False)
+                   .agg(revenue=("Invoice Amount","sum"),
+                        cost=("Total Cost Calc","sum"),
+                        orders=("Invoice Number","nunique")))
+    pf_margin["margin"]  = pf_margin["revenue"] - pf_margin["cost"]
+    pf_margin["margin%"] = np.where(pf_margin["revenue"]>0, pf_margin["margin"]/pf_margin["revenue"], np.nan)
+    pf_margin = pf_margin.sort_values("margin", ascending=False)
+
+    fig = px.bar(pf_margin, x="margin", y="Product Family", orientation="h",
+                 labels={"margin":"Margin ($)"}, title="Margin by Product Family")
+    fig.update_xaxes(tickprefix="$", separatethousands=True)
+    fig.update_layout(yaxis={"categoryorder":"total ascending"})
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(pf_margin.style.format({
+        "revenue":"${:,.0f}","cost":"${:,.0f}","margin":"${:,.0f}","margin%":"{:.1%}"
+    }), use_container_width=True)
+
+# ---------- Service Quality ----------
+with tabs[5]:
+    st.subheader("Fill Rate by Month × Product Family")
+    # Expect 'Order Qty' / 'Ship Qty' present
+    svc = data.copy()
+    svc["Order Qty"] = pd.to_numeric(svc["Order Qty"], errors="coerce").fillna(0)
+    svc["Ship Qty"]  = pd.to_numeric(svc["Ship Qty"], errors="coerce").fillna(0)
+    svc["Fill Rate"] = np.where(svc["Order Qty"]>0, svc["Ship Qty"]/svc["Order Qty"], np.nan).clip(0,1)
+
+    fill = (svc.groupby(["Year-Month","Product Family"], as_index=False)
+              .agg(fill_rate=("Fill Rate","mean"),
+                   invoices=("Invoice Number","nunique")))
+    pivot = fill.pivot(index="Product Family", columns="Year-Month", values="fill_rate").fillna(0)
+    fig = px.imshow(pivot, aspect="auto", color_continuous_scale="Blues",
+                    title="Fill Rate (Avg) by Product Family × Month", text_auto=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
-# 4. Family Breakdown
-def family_breakdown():
-    st.write("### Revenue by Product Family")
-    fam = (
-        df_filtered
-        .groupby('Product Family')['Total Price']
-        .agg(['count','sum','mean'])
-        .reset_index()
-        .sort_values('sum', ascending=False)
-    )
-    fig = px.bar(
-        fam,
-        x='Product Family',
-        y='sum',
-        title='Total Revenue per Product Family',
-        labels={'sum':'Total Revenue ($)'}
-    )
+# ---------- Cohorts & RFM ----------
+with tabs[6]:
+    st.subheader("New vs Returning Customers per Month")
+    tmp = data.copy()
+    first_purchase = (tmp.sort_values("Invoice Date")
+                        .groupby("Customer ID", as_index=False)["Invoice Date"].first()
+                        .rename(columns={"Invoice Date":"First Purchase Date"}))
+    first_purchase["First YM"] = first_purchase["First Purchase Date"].dt.to_period("M").astype(str)
+    tmp = tmp.merge(first_purchase[["Customer ID","First YM"]], on="Customer ID", how="left")
+    tmp["Year-Month"] = tmp["Invoice Date"].dt.to_period("M").astype(str)
+    tmp["Cust Type"] = np.where(tmp["Year-Month"] == tmp["First YM"], "New", "Returning")
+    nr_month = (tmp.groupby(["Year-Month","Cust Type"], as_index=False)
+                  .agg(total_sales=("Invoice Amount","sum"),
+                       invoices=("Invoice Number","nunique"),
+                       customers=("Customer ID","nunique")))
+    fig = px.area(nr_month, x="Year-Month", y="total_sales", color="Cust Type",
+                  title="Monthly Sales: New vs Returning Customers")
+    fig.update_yaxes(tickprefix="$", separatethousands=True)
     st.plotly_chart(fig, use_container_width=True)
 
-    fam_display = fam.copy()
-    fam_display.columns = ['Product Family','Count','Total Revenue','Average Revenue']
-    fam_display['Total Revenue'] = fam_display['Total Revenue'].map(lambda x: f"${x:,.2f}")
-    fam_display['Average Revenue'] = fam_display['Average Revenue'].map(lambda x: f"${x:,.2f}")
-    st.dataframe(fam_display)
+    st.subheader("RFM (Recency–Frequency–Monetary)")
+    snapshot = data["Invoice Date"].max() + pd.Timedelta(days=1)
+    rfm = (data.groupby("Customer ID")
+              .agg(Recency=("Invoice Date", lambda s: (snapshot - s.max()).days),
+                   Frequency=("Invoice Number","nunique"),
+                   Monetary=("Invoice Amount","sum"))
+              .reset_index())
+    # Quintiles
+    rfm["R"] = pd.qcut(rfm["Recency"], 5, labels=[5,4,3,2,1]).astype(int)
+    rfm["F"] = pd.qcut(rfm["Frequency"].rank(method="first"), 5, labels=[1,2,3,4,5]).astype(int)
+    rfm["M"] = pd.qcut(rfm["Monetary"].rank(method="first"), 5, labels=[1,2,3,4,5]).astype(int)
+    rfm["RFM Score"] = rfm["R"]*100 + rfm["F"]*10 + rfm["M"]
+    fig = px.scatter(rfm, x="Frequency", y="Monetary", size="R",
+                     hover_data=["Customer ID"], title="RFM: Frequency vs Monetary")
+    fig.update_yaxes(tickprefix="$", separatethousands=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-# 5. Packaging Analysis
-def packaging_analysis():
-    st.write(f"### Packaging Analysis: {selected_agg.title()} of {selected_metric}")
-    dfg = df_filtered.groupby('Packaging')[selected_metric]
-    if selected_agg == 'mode':
-        pkg = dfg.apply(lambda x: x.mode().iat[0] if not x.mode().empty else np.nan)
-    elif selected_agg == 'count':
-        pkg = dfg.count()
+# ---------- Product Mix ----------
+with tabs[7]:
+    st.subheader("Monthly Sales by Product Family")
+    pf_month = (data.groupby(["Year-Month","Product Family"], as_index=False)
+                  .agg(total_sales=("Invoice Amount","sum"))
+                  .sort_values("Year-Month"))
+    fig = px.line(pf_month, x="Year-Month", y="total_sales", color="Product Family",
+                  markers=True, title="Monthly Sales by Product Family")
+    fig.update_yaxes(tickprefix="$", separatethousands=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ---------- Market Basket ----------
+with tabs[8]:
+    st.subheader("Top Co-Purchased Product Family Pairs")
+    pairs = []
+    for inv, g in data.groupby("Invoice Number"):
+        fams = sorted(set(g["Product Family"].dropna()))
+        for i in range(len(fams)):
+            for j in range(i+1, len(fams)):
+                pairs.append((fams[i], fams[j]))
+    if pairs:
+        pairs_df = pd.DataFrame(pairs, columns=["A","B"])
+        pair_counts = pairs_df.value_counts().reset_index(name="count").sort_values("count", ascending=False).head(20)
+        fig = px.bar(pair_counts, x="count",
+                     y=pair_counts.apply(lambda r: f"{r['A']} + {r['B']}", axis=1),
+                     orientation="h", title="Top Co-Purchased Product Family Pairs")
+        fig.update_layout(yaxis={"categoryorder":"total ascending"})
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(pair_counts, use_container_width=True)
     else:
-        pkg = getattr(dfg, selected_agg)()
-    pkg = pkg.reset_index().dropna()
-    pkg.columns = ['Packaging', selected_metric]
-    pkg = pkg.sort_values(selected_metric, ascending=False)
-    fig = px.bar(
-        pkg,
-        x='Packaging',
-        y=selected_metric,
-        title=f"{selected_agg.title()} of {selected_metric} by Packaging",
-        labels={selected_metric:f"{selected_agg.title()} of {selected_metric}"}
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# 6. Product Analysis
-def product_analysis():
-    st.write(f"### Product Analysis: Top 20 Products by {selected_agg.title()} of {selected_metric}")
-    dfg = df_filtered.groupby('Product')[selected_metric]
-    if selected_agg == 'mode':
-        prod = dfg.apply(lambda x: x.mode().iat[0] if not x.mode().empty else np.nan)
-    elif selected_agg == 'count':
-        prod = dfg.count()
-    else:
-        prod = getattr(dfg, selected_agg)()
-    prod = (
-        prod.reset_index()
-        .rename(columns={selected_metric:selected_metric})
-        .dropna()
-        .sort_values(selected_metric, ascending=False)
-        .head(20)
-    )
-    fig = px.bar(
-        prod,
-        x='Product',
-        y=selected_metric,
-        title=f"Top 20 Products by {selected_agg.title()} of {selected_metric}",
-        labels={selected_metric:f"{selected_agg.title()} of {selected_metric}"}
-    )
-    fig.update_xaxes(tickangle=-45)
-    st.plotly_chart(fig, use_container_width=True)
-
-# 7. Tax Rate Analysis
-
-def tax_rate():
-    st.write("### High Tax Rate Products and Packaging Types")
-    temp = df_filtered.dropna(subset=['Sales Tax', 'Total Price', 'Product', 'Packaging']).copy()
-    temp = temp[temp['Total Price'] > 0]
-    temp['Tax Rate'] = temp['Sales Tax'] / temp['Total Price']
-
-    # Threshold: Show the top 10% tax rates
-    high_thresh = temp['Tax Rate'].quantile(0.9)
-    high_tax = temp[temp['Tax Rate'] >= high_thresh]
-
-    st.info(f"Showing products and packaging with tax rate ≥ {high_thresh:.1%} (top 10%)")
-
-    # Group by Product, Packaging, and Product Family
-    group_cols = ['Product', 'Packaging', 'Product Family']
-    top_tax = (
-        high_tax.groupby(group_cols)
-        .agg(
-            n_invoices=('Tax Rate', 'count'),
-            avg_tax_rate=('Tax Rate', 'mean'),
-            min_tax_rate=('Tax Rate', 'min'),
-            max_tax_rate=('Tax Rate', 'max'),
-            total_price=('Total Price', 'sum')
-        )
-        .reset_index()
-        .sort_values('avg_tax_rate', ascending=False)
-    )
-    top_tax['avg_tax_rate'] = top_tax['avg_tax_rate'] * 100  # To percent
-
-    # Show table of results
-    st.write("#### Top Product & Packaging Combos by Avg Tax Rate")
-    st.dataframe(top_tax.style.format({
-        'avg_tax_rate': '{:.1f}%',
-        'total_price': '${:,.0f}'
-    }))
-
-    # Plot: Top 30 as horizontal bar chart
-    fig = px.bar(
-        top_tax.head(30),
-        x='avg_tax_rate',
-        y='Product',
-        color='Packaging',
-        orientation='h',
-        hover_data=['Product Family', 'n_invoices', 'min_tax_rate', 'max_tax_rate', 'total_price'],
-        title=f"Top 30 Product & Packaging Types with High Tax Rate",
-        labels={'avg_tax_rate': 'Avg Tax Rate (%)'}
-    )
-    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# 8. Cost vs Price Scatter
-# def cost_vs_price():
-#     st.write("### Unit Cost vs Total Price Scatter Plot")
-#     fig = px.scatter(
-#         df_filtered,
-#         x='Unit Cost',
-#         y='Total Price',
-#         color='Product Family',
-#         hover_data=['Product','Packaging'],
-#         opacity=0.6,
-#         labels={'Unit Cost':'Unit Cost ($)','Total Price':'Total Price ($)'}
-#     )
-#     st.plotly_chart(fig, use_container_width=True)
-def cost_vs_price():
-    st.write("### Unit Cost vs Total Price Scatter Plot")
-    # Clean data: Remove rows where values are missing or <= 0
-    temp = df_filtered.dropna(subset=['Unit Cost', 'Total Price', 'Product', 'Packaging', 'Product Family'])
-    temp = temp[(temp['Unit Cost'] > 0) & (temp['Total Price'] > 0)]
-
-    # Optional: Show log scale checkbox for x-axis (Unit Cost)
-    log_x = st.checkbox("Log scale Unit Cost (recommended for wide range)", value=True)
-
-    # Plotly scatter, color by Product Family, hover shows Product, Packaging
-    fig = px.scatter(
-        temp,
-        x='Unit Cost',
-        y='Total Price',
-        color='Product Family',
-        hover_data=['Product', 'Packaging'],
-        opacity=0.7,
-        labels={'Unit Cost': 'Unit Cost ($)', 'Total Price': 'Total Price ($)'},
-        title="Unit Cost vs Total Price by Product Family"
-    )
-    if log_x:
-        fig.update_xaxes(type='log')
-    fig.update_traces(marker=dict(size=8, line=dict(width=0.5, color='DarkSlateGrey')))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Show tables for top outliers
-    high_cost = temp.sort_values('Unit Cost', ascending=False).head(10)
-    high_price = temp.sort_values('Total Price', ascending=False).head(10)
-    st.write("#### Top 10 by Unit Cost")
-    st.dataframe(high_cost[['Product', 'Packaging', 'Product Family', 'Unit Cost', 'Total Price']])
-    st.write("#### Top 10 by Total Price")
-    st.dataframe(high_price[['Product', 'Packaging', 'Product Family', 'Unit Cost', 'Total Price']])
-
-
-# 9. Quarterly Growth (YoY and QoQ)
-def yoy_growth_quarterly():
-    st.write("### Quarterly and Yearly Revenue Growth")
-
-    # --- 1. Prepare Quarterly Data ---
-    temp = df_filtered.copy()
-    # Create a Quarter column based on Month
-    month_to_q = {'Jan': 'Q1', 'Feb': 'Q1', 'Mar': 'Q1',
-                  'Apr': 'Q2', 'May': 'Q2', 'Jun': 'Q2',
-                  'Jul': 'Q3', 'Aug': 'Q3', 'Sep': 'Q3',
-                  'Oct': 'Q4', 'Nov': 'Q4', 'Dec': 'Q4'}
-    temp['Quarter'] = temp['Month'].map(month_to_q)
-    # Keep only 2023–2025
-    years = [2023, 2024, 2025]
-    temp = temp[temp['Year'].isin(years)]
-    
-    # Aggregate revenue per Year-Quarter
-    qrev = temp.groupby(['Year', 'Quarter'])['Total Price'].sum().reset_index()
-    # Ensure all quarters exist
-    all_combos = pd.MultiIndex.from_product([years, ['Q1','Q2','Q3','Q4']], names=['Year', 'Quarter'])
-    qrev = qrev.set_index(['Year','Quarter']).reindex(all_combos, fill_value=0).reset_index()
-
-    # --- 2. Compute QoQ and YoY Growth ---
-    qrev['QoQ Growth (%)'] = qrev.groupby('Year')['Total Price'].pct_change().mul(100)
-    # Year-over-Year Growth per quarter (e.g. Q2 2024 vs Q2 2023)
-    qrev['YoY Growth (%)'] = qrev.groupby('Quarter')['Total Price'].pct_change().mul(100)
-    
-    # --- 3. Visualization ---
-    # A. Bar chart for Revenue (grouped by Year, x=Quarter)
-    fig = go.Figure()
-    for year in years:
-        data = qrev[qrev['Year'] == year]
-        fig.add_trace(go.Bar(
-            x=data['Quarter'],
-            y=data['Total Price'],
-            name=f"{year} Revenue",
-            text=[f"${x:,.0f}" for x in data['Total Price']],
-            textposition='outside'
-        ))
-
-    # B. Add YoY Growth Line for each year (excluding 2023, which has no YoY)
-    colors = {2024: 'crimson', 2025: 'mediumseagreen'}
-    for year in [2024, 2025]:
-        data = qrev[qrev['Year'] == year]
-        fig.add_trace(go.Scatter(
-            x=data['Quarter'],
-            y=data['YoY Growth (%)'],
-            name=f"{year} YoY Growth",
-            mode='lines+markers',
-            yaxis='y2',
-            marker=dict(size=10, color=colors[year]),
-            line=dict(width=3, color=colors[year]),
-            text=[f"{x:.1f}%" for x in data['YoY Growth (%)']],
-            textposition='top center'
-        ))
-    # Layout
-    fig.update_layout(
-        title='Quarterly Revenue and Year-over-Year Growth',
-        xaxis=dict(title='Quarter'),
-        yaxis=dict(title='Revenue ($)'),
-        yaxis2=dict(title='YoY Growth (%)', overlaying='y', side='right', showgrid=False),
-        barmode='group',
-        legend=dict(orientation='h'),
-        margin=dict(t=50, b=30),
-        height=500
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(qrev)
-
-# Render tabs
-funcs = [
-    descriptive_stats, correlation_matrix, monthly_trend,
-    family_breakdown, packaging_analysis, product_analysis,
-    tax_rate, cost_vs_price, yoy_growth_quarterly
-]
-for tab, fn in zip(tabs, funcs):
-    with tab:
-        fn()
+        st.info("Not enough diversity in Product Family per invoice to compute pairs.")
