@@ -1,68 +1,68 @@
 # app.py
-import os
-import numpy as np
-import pandas as pd
-import plotly.express as px
+from pathlib import Path
 import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
 
 # --------------------------- Page config ---------------------------
 st.set_page_config(page_title="Sales Analysis", page_icon="📈", layout="wide")
 
-# --------------------------- Helpers ---------------------------
-EXPECTED_COLUMNS = [
-    "Company","Customer Number","Customer ID","Customer Name",
-    "Customer City","Customer State","Customer Country",
-    "ShipTo Name","ShipTo City","ShipTo State","ZIP Code","ShipTo Country",
-    "Order Number","Plant","Invoice Number","Invoice Date","Invoice Amount",
-    "Invoice Line","Part Number","Line Description","Product Family",
-    "Order Qty","Ship Qty","Misc Charges","Tax Code","Rate Code",
-    "Taxable Amount","Tax Percent","Tax Amount",
-    "Avg Total Cost","Avg Labor Cost","Avg Burden Cost","Avg Material Cost",
-    "Avg Subcontract Cost","Avg Material Burden Cost","Cost ID"
-]
+# --------------------------- Repo file config ---------------------------
+FILE_NAME = "orders_AR_cleaned.csv"   # <- your file in the repo
+SEARCH_ROOT = Path(__file__).parent
+
+def _find_csv(name: str, root: Path):
+    p = root / name
+    if p.exists():
+        return p
+    hits = list(root.rglob(name))
+    return hits[0] if hits else None
 
 def add_calendar_if_missing(df: pd.DataFrame) -> pd.DataFrame:
-    """Add Year / Month Name / Quarter / Year-Month if they are missing.
-    (Light-touch; your CSV is already cleaned.)"""
     out = df.copy()
     if "Invoice Date" in out.columns and not np.issubdtype(out["Invoice Date"].dtype, np.datetime64):
-        # Only parse type; no transformation of values
         out["Invoice Date"] = pd.to_datetime(out["Invoice Date"], errors="coerce")
-
     if "Year" not in out.columns and "Invoice Date" in out.columns:
         out["Year"] = out["Invoice Date"].dt.year
-
     month_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
     if "Month Name" not in out.columns and "Invoice Date" in out.columns:
         out["Month Name"] = out["Invoice Date"].dt.strftime('%b')
     if "Month Name" in out.columns:
         out["Month Name"] = pd.Categorical(out["Month Name"], categories=month_order, ordered=True)
-
     if "Quarter" not in out.columns and "Invoice Date" in out.columns:
         out["Quarter"] = 'Q' + out["Invoice Date"].dt.quarter.astype(str)
-
     if "Year-Month" not in out.columns and "Invoice Date" in out.columns:
         out["Year-Month"] = out["Invoice Date"].dt.to_period("M").astype(str)
-
     return out
 
+@st.cache_data(show_spinner=False)
+def load_repo_csv() -> pd.DataFrame:
+    path = _find_csv(FILE_NAME, SEARCH_ROOT)
+    if path is None:
+        all_csvs = [str(p.relative_to(SEARCH_ROOT)) for p in SEARCH_ROOT.rglob("*.csv")]
+        raise FileNotFoundError(
+            f"Could not find '{FILE_NAME}' under {SEARCH_ROOT.resolve()}.\n"
+            f"CSV files I can see: {all_csvs[:30]}"
+        )
+    df = pd.read_csv(path, encoding="latin1", parse_dates=["Invoice Date"])
+    return add_calendar_if_missing(df)
+
+# --------------------------- Small helpers ---------------------------
 def kpi_card(label, value, help_text=None):
     st.metric(label, value, help=help_text)
 
 def plot_top_cities_map(df, size_by="sales", color_hex="#2E86AB", title=None):
-    """Expects df with ['lat','lon','total_sales','n_invoices','Customer City','Customer State']."""
+    # Needs columns: ['lat','lon','total_sales','n_invoices','Customer City','Customer State']
     if not {"lat","lon"}.issubset(df.columns):
         st.info("No 'lat'/'lon' columns found. Precompute geocodes in your data to enable the map.")
         return
-
     m = df.dropna(subset=['lat','lon']).copy()
     m["total_sales"] = pd.to_numeric(m["total_sales"], errors="coerce")
     m["n_invoices"]  = pd.to_numeric(m["n_invoices"], errors="coerce")
     m["total_sales_$"] = m["total_sales"].map(lambda x: f"${x:,.2f}")
     size_col = "total_sales" if size_by == "sales" else "n_invoices"
-
-    # Prefer MapLibre API when available
-    if hasattr(px, "scatter_map"):
+    if hasattr(px, "scatter_map"):   # MapLibre (avoids deprecation)
         fig = px.scatter_map(
             m, lat="lat", lon="lon", size=size_col, hover_name="Customer City",
             hover_data={"total_sales_$": True, "n_invoices":":.0f"},
@@ -80,32 +80,17 @@ def plot_top_cities_map(df, size_by="sales", color_hex="#2E86AB", title=None):
     fig.update_layout(showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-# --------------------------- Data loader ---------------------------
-@st.cache_data(show_spinner=False)
-def load_data(file) -> pd.DataFrame:
-    if isinstance(file, str):
-        df = pd.read_csv(file, encoding="latin1", parse_dates=["Invoice Date"])
-    else:
-        df = pd.read_csv(file, encoding="latin1", parse_dates=["Invoice Date"])
-    return add_calendar_if_missing(df)
-
-# --------------------------- Sidebar ---------------------------
-st.sidebar.header("Data")
-uploaded = st.sidebar.file_uploader("Upload cleaned CSV", type=["csv"])
-default_path = st.sidebar.text_input("...or path to CSV", value="", help="Optional local path on the server.")
-df = None
-if uploaded is not None:
-    df = load_data(uploaded)
-elif default_path:
-    df = load_data(default_path)
-else:
-    st.info("Upload your **cleaned** CSV to get started.")
+# --------------------------- Load data from repo ---------------------------
+st.sidebar.markdown("**Data source:** repo file")
+try:
+    df = load_repo_csv()
+except Exception as e:
+    st.error(str(e))
     st.stop()
 
-# Global display prefs (just for Streamlit tables)
 pd.options.display.float_format = "{:,.2f}".format
 
-# Filters
+# --------------------------- Filters ---------------------------
 st.sidebar.header("Filters")
 state_filter = st.sidebar.multiselect("Customer State", sorted(df["Customer State"].dropna().unique().tolist()))
 family_filter = st.sidebar.multiselect("Product Family", sorted(df["Product Family"].dropna().unique().tolist()))
@@ -202,7 +187,6 @@ with tabs[2]:
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Top Cities (Map)")
-    # If your data file already includes 'lat'/'lon' for top cities, this will render
     plot_top_cities_map(city_group.head(15))
 
 # ---------- Time Series ----------
@@ -250,18 +234,11 @@ with tabs[3]:
 # ---------- Profitability ----------
 with tabs[4]:
     st.subheader("Margin by Product Family")
-    # Expect either precomputed total cost or per-unit cost; use best effort
     COST_IS_PER_UNIT = True
     d = data.copy()
     if "Avg Total Cost" in d.columns:
-        if COST_IS_PER_UNIT:
-            d["Total Cost Calc"] = np.where(
-                pd.to_numeric(d["Ship Qty"], errors="coerce").fillna(0) > 0,
-                d["Avg Total Cost"] * pd.to_numeric(d["Ship Qty"], errors="coerce").fillna(0),
-                d["Avg Total Cost"]
-            )
-        else:
-            d["Total Cost Calc"] = d["Avg Total Cost"]
+        ship_qty = pd.to_numeric(d["Ship Qty"], errors="coerce").fillna(0)
+        d["Total Cost Calc"] = d["Avg Total Cost"] * ship_qty if COST_IS_PER_UNIT else d["Avg Total Cost"]
     else:
         d["Total Cost Calc"] = np.nan
 
@@ -285,7 +262,6 @@ with tabs[4]:
 # ---------- Service Quality ----------
 with tabs[5]:
     st.subheader("Fill Rate by Month × Product Family")
-    # Expect 'Order Qty' / 'Ship Qty' present
     svc = data.copy()
     svc["Order Qty"] = pd.to_numeric(svc["Order Qty"], errors="coerce").fillna(0)
     svc["Ship Qty"]  = pd.to_numeric(svc["Ship Qty"], errors="coerce").fillna(0)
@@ -301,7 +277,7 @@ with tabs[5]:
 
 # ---------- Cohorts & RFM ----------
 with tabs[6]:
-    st.subheader("New vs Returning Customers per Month")
+    st.subheader("Monthly Sales: New vs Returning Customers")
     tmp = data.copy()
     first_purchase = (tmp.sort_values("Invoice Date")
                         .groupby("Customer ID", as_index=False)["Invoice Date"].first()
@@ -326,7 +302,6 @@ with tabs[6]:
                    Frequency=("Invoice Number","nunique"),
                    Monetary=("Invoice Amount","sum"))
               .reset_index())
-    # Quintiles
     rfm["R"] = pd.qcut(rfm["Recency"], 5, labels=[5,4,3,2,1]).astype(int)
     rfm["F"] = pd.qcut(rfm["Frequency"].rank(method="first"), 5, labels=[1,2,3,4,5]).astype(int)
     rfm["M"] = pd.qcut(rfm["Monetary"].rank(method="first"), 5, labels=[1,2,3,4,5]).astype(int)
